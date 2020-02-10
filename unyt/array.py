@@ -15,7 +15,7 @@ unyt_array class.
 
 import copy
 
-from functools import lru_cache
+from functools import lru_cache, wraps
 from numbers import Number as numeric_type
 import numpy as np
 from numpy import (
@@ -331,6 +331,8 @@ multiple_output_operators = {modf: 2, frexp: 2, divmod_: 2}
 
 LARGE_INPUT = {4: 16777217, 8: 9007199254740993}
 
+HANDLED_FUNCTIONS = {}
+
 
 class unyt_array(np.ndarray):
     """
@@ -357,9 +359,9 @@ class unyt_array(np.ndarray):
         speedups in the input validation logic adds significant overhead. If
         set, input_units *must* be a valid unit object. Defaults to False.
     name : string
-        The name of the array. Defaults to None. This attribute does not propagate
-        through mathematical operations, but is preserved under indexing
-        and unit conversions.
+        The name of the array. Defaults to None. This attribute does not
+        propagate through mathematical operations, but is preserved under
+        indexing and unit conversions.
 
     Examples
     --------
@@ -1862,6 +1864,11 @@ class unyt_array(np.ndarray):
         name = getattr(self, "name", None)
         return type(self)(np.copy(np.asarray(self)), self.units, name=name)
 
+    def __array_function__(self, func, types, args, kwargs):
+        if func not in HANDLED_FUNCTIONS:
+            return NotImplemented
+        return HANDLED_FUNCTIONS[func](*args, **kwargs)
+
     def __array_finalize__(self, obj):
         self.units = getattr(obj, "units", NULL_UNIT)
         self.name = getattr(obj, "name", None)
@@ -2044,6 +2051,24 @@ def _validate_numpy_wrapper_units(v, arrs):
     return v
 
 
+def implements(numpy_function):
+    """Register dispatch for __array_function__ override
+
+    Parameters
+    ----------
+    numpy_function : function
+        NumPy API function that will be overrided for unyt_array instances
+    """
+
+    @wraps(numpy_function)
+    def decorator(func):
+        HANDLED_FUNCTIONS[numpy_function] = func
+        return func
+
+    return decorator
+
+
+@implements(np.concatenate)
 def uconcatenate(arrs, axis=0):
     """Concatenate a sequence of arrays.
 
@@ -2060,11 +2085,12 @@ def uconcatenate(arrs, axis=0):
     unyt_array([1, 2, 3, 2, 3, 4], 'cm')
 
     """
-    v = np.concatenate(arrs, axis=axis)
+    v = np.concatenate((a.d for a in arrs), axis=axis)
     v = _validate_numpy_wrapper_units(v, arrs)
     return v
 
 
+@implements(np.cross)
 def ucross(arr1, arr2, registry=None, axisa=-1, axisb=-1, axisc=-1, axis=None):
     """Applies the cross product to two YT arrays.
 
@@ -2072,12 +2098,13 @@ def ucross(arr1, arr2, registry=None, axisa=-1, axisb=-1, axisc=-1, axis=None):
     See the documentation of numpy.cross for full
     details.
     """
-    v = np.cross(arr1, arr2, axisa=axisa, axisb=axisb, axisc=axisc, axis=axis)
+    v = np.cross(arr1.d, arr2.d, axisa=axisa, axisb=axisb, axisc=axisc, axis=axis)
     units = arr1.units * arr2.units
     arr = unyt_array(v, units, registry=registry)
     return arr
 
 
+@implements(np.intersect1d)
 def uintersect1d(arr1, arr2, assume_unique=False):
     """Find the sorted unique elements of the two input arrays.
 
@@ -2094,11 +2121,12 @@ def uintersect1d(arr1, arr2, assume_unique=False):
     unyt_array([2, 3], 'cm')
 
     """
-    v = np.intersect1d(arr1, arr2, assume_unique=assume_unique)
+    v = np.intersect1d(arr1.d, arr2.d, assume_unique=assume_unique)
     v = _validate_numpy_wrapper_units(v, [arr1, arr2])
     return v
 
 
+@implements(np.union1d)
 def uunion1d(arr1, arr2):
     """Find the union of two arrays.
 
@@ -2115,11 +2143,12 @@ def uunion1d(arr1, arr2):
     unyt_array([1, 2, 3, 4], 'cm')
 
     """
-    v = np.union1d(arr1, arr2)
+    v = np.union1d(arr1.d, arr2.d)
     v = _validate_numpy_wrapper_units(v, [arr1, arr2])
     return v
 
 
+@implements(np.linalg.norm)
 def unorm(data, ord=None, axis=None, keepdims=False):
     """Matrix or vector norm that preserves units
 
@@ -2140,6 +2169,7 @@ def unorm(data, ord=None, axis=None, keepdims=False):
     return unyt_array(norm, data.units)
 
 
+@implements(np.dot)
 def udot(op1, op2):
     """Matrix or vector dot product that preserves units
 
@@ -2161,6 +2191,7 @@ def udot(op1, op2):
     return unyt_array(dot, units)
 
 
+@implements(np.vstack)
 def uvstack(arrs):
     """Stack arrays in sequence vertically (row wise) while preserving units
 
@@ -2180,6 +2211,7 @@ def uvstack(arrs):
     return v
 
 
+@implements(np.hstack)
 def uhstack(arrs):
     """Stack arrays in sequence horizontally while preserving units
 
@@ -2204,6 +2236,7 @@ def uhstack(arrs):
     return v
 
 
+@implements(np.stack)
 def ustack(arrs, axis=0):
     """Join a sequence of arrays along a new axis while preserving units
 
